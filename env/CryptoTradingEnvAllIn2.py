@@ -1,3 +1,4 @@
+import math
 import random
 import gym
 from gym import spaces
@@ -39,7 +40,7 @@ class CryptoTradingEnvAllIn2(gym.Env):
 
         # Prices contains the OHCL values for the last five prices
         self.observation_space = spaces.Box(
-            low=-1, high=1, shape=(96, ), dtype=np.float16)
+            low=-1, high=1, shape=(90, ), dtype=np.float16)
 
         self.factory = mfsl.create_factory()
         self.df["lhc"] = self.df["close"]
@@ -58,20 +59,18 @@ class CryptoTradingEnvAllIn2(gym.Env):
                                                  (frag[f] for f in self.feats_str))), axis=0)
         market_feature = np.nan_to_num(market_feature) + 1e-6
 
-        
+        # state_feature = np.array([
+        #     self.balance / MAX_ACCOUNT_BALANCE,
+        #     self.max_net_worth / MAX_ACCOUNT_BALANCE,
+        #     self.shares_held / MAX_NUM_SHARES,
+        #     self.cost_basis / MAX_SHARE_PRICE,
+        #     self.total_shares_sold / MAX_NUM_SHARES,
+        #     self.total_sales_value / (MAX_NUM_SHARES * MAX_SHARE_PRICE),
+        # ])
 
-        state_feature = np.array([
-            self.balance / MAX_ACCOUNT_BALANCE,
-            self.max_net_worth / MAX_ACCOUNT_BALANCE,
-            self.shares_held / MAX_NUM_SHARES,
-            self.cost_basis / MAX_SHARE_PRICE,
-            self.total_shares_sold / MAX_NUM_SHARES,
-            self.total_sales_value / (MAX_NUM_SHARES * MAX_SHARE_PRICE),
-        ])
+        # feature = np.concatenate([market_feature, state_feature], axis=0)
 
-        feature = np.concatenate([market_feature, state_feature], axis=0)
-
-        return feature.flatten()
+        return market_feature.flatten()
 
     def _take_action(self, action):
         # Set the current price to a random price within the time step
@@ -118,17 +117,33 @@ class CryptoTradingEnvAllIn2(gym.Env):
             self.current_step = 0
             already_done = True
 
-        # diff = self.current_step - self.first_step
 
+        # sparse reward
         # reward = 0
-        # if diff >= 22:  # similar to n_rollout
-        reward = (self.net_worth - INITIAL_ACCOUNT_BALANCE)
-
-        # self.first_step = self.current_step
+        # diff = self.current_step - self.first_step
+        # if diff >= 5:  # similar to n_rollout
+        #     reward = (self.net_worth - INITIAL_ACCOUNT_BALANCE)
+        #     self.first_step = self.current_step
         # reward = reward * (self.current_step - self.first_step)
 
-        done = self.net_worth <= 0
 
+        reward = 0
+        future_avg = np.max(self.df.loc[self.current_step: self.current_step + 5, 'open'].values)
+        curr_price = self.df.iloc[self.current_step]['close']
+        fiat_coin_ratio = self.balance / (curr_price*self.shares_held)
+
+        if action == 0:
+            reward = (future_avg - curr_price) * fiat_coin_ratio
+            if reward < -0.1:
+                reward = -0.1
+        elif action == 1:
+            reward = (curr_price - future_avg) * (1/fiat_coin_ratio)
+            if reward < -0.1:
+                reward = -0.1
+        else:
+            reward = -1
+
+        done = self.net_worth <= 0
         if already_done:
             done = True
 
@@ -148,7 +163,7 @@ class CryptoTradingEnvAllIn2(gym.Env):
 
         # Set the current step to a random point within the data frame
         self.current_step = random.randint(
-            0, len(self.df.loc[:, 'open'].values) - self.win_size)
+            self.win_size, len(self.df.loc[:, 'open'].values) - self.win_size)
 
         self.first_step = self.current_step
 

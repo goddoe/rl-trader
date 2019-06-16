@@ -13,7 +13,7 @@ from init import weight_init
 LEARNING_RATE = 0.001
 GAMMA = 0.98
 
-FEATURE_SIZE = 96
+FEATURE_SIZE = 90
 
 
 class ActorCritic(nn.Module):
@@ -132,8 +132,8 @@ if __name__ == '__main__':
     print_interval = 1
 
     n_epi = 1000
-    n_batch = 30
-    n_rollout = 24
+    n_batch = 15
+    n_rollout = 64
 
     for n_epi in range(n_epi):
         s = train_env.reset()
@@ -192,6 +192,8 @@ if __name__ == '__main__':
             break
 
         train_env.render()
+
+    np.array(prob_list).mean(axis=0)
 
     test_env.reset()
     test_env.current_step = 0

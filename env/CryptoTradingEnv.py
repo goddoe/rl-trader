@@ -143,7 +143,7 @@ class CryptoTradingEnv(gym.Env):
 
         # Set the current step to a random point within the data frame
         self.current_step = random.randint(
-            0, len(self.df.loc[:, 'open'].values) - self.win_size)
+            self.win_size, len(self.df.loc[:, 'open'].values) - self.win_size)
 
         return self._next_observation()
 
