@@ -155,7 +155,7 @@ if __name__ == '__main__':
     n_train = int(total * train_ratio)
 
     df = TickerDataFramePreparer(
-        window='1m',
+        window='15m',
     ).prepare(df)
 
     train_df = df.reset_index()

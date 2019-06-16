@@ -22,12 +22,12 @@ def naive_normalize(df):
     return (df-df.mean()) / (df.std() + 1e-6)
 
 
-class CryptoTradingEnvAllIn(gym.Env):
+class CrryptoTradingEnvAllIn(gym.Env):
     """A stock trading environment for OpenAI gym"""
     metadata = {'render.modes': ['human']}
 
     def __init__(self, df, win_size=30):
-        super(CryptoTradingEnvAllIn, self).__init__()
+        super(CrryptoTradingEnvAllIn, self).__init__()
 
         self.df = StockDataFrame.retype(df)
         self.reward_range = (0, MAX_ACCOUNT_BALANCE)
@@ -52,7 +52,7 @@ class CryptoTradingEnvAllIn(gym.Env):
     def _next_observation(self):
         # Get the stock data points for the last 5 days and scale to between 0-1
 
-        frag = self.df[self.current_step: self.current_step + self.win_size]
+        frag = self.df[self.current_step - self.win_size: self.current_step]
 
         market_feature = np.concatenate(list(map(naive_normalize,
                                                  (frag[f] for f in self.feats_str))), axis=0)

@@ -1,5 +1,5 @@
-# PPO-LSTM
-import os
+# actor critic
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -10,37 +10,15 @@ from tensorboardX import SummaryWriter
 from init import weight_init
 
 # Hyperparameters
-LEARNING_RATE = 0.00001
+LEARNING_RATE = 0.001
 GAMMA = 0.98
-LMBDA = 0.95
-EPS_CLIP = 0.1
-K_EPOCH = 5
-N_EPI = 1000
-N_BATCH = 20
-T_HORIZON = 128
 
-FEATURE_SIZE = 26
+FEATURE_SIZE = 96
 
 
-def save_model(model, save_dir, epoch_i, batch_i, desc=''):
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
-
-    save_path = os.path.join(save_dir,
-                             '{}{}_{}_ckpt.tar'.format(desc,
-                                                       epoch_i,
-                                                       batch_i))
-    try:
-        state_dict = model.module.state_dict()
-    except AttributeError:
-        state_dict = model.state_dict()
-    torch.save(state_dict, save_path)
-    return save_path
-
-
-class PPO(nn.Module):
+class ActorCritic(nn.Module):
     def __init__(self, writer=None):
-        super(PPO, self).__init__()
+        super(ActorCritic, self).__init__()
         self.data = []
 
         self.fc1 = nn.Linear(FEATURE_SIZE, 64)
@@ -48,6 +26,7 @@ class PPO(nn.Module):
         self.fc_pi = nn.Linear(64, 3)
         self.fc_pi_amount = nn.Linear(64, 3)
         self.fc_v = nn.Linear(64, 1)
+
         self.optimizer = optim.Adam(self.parameters(), lr=LEARNING_RATE)
         self.writer = writer
         self.global_i = 0
@@ -55,13 +34,9 @@ class PPO(nn.Module):
     def pi(self, x):
         x = x.view(-1, FEATURE_SIZE)
         x = F.relu(self.ln1(self.fc1(x)))
-        feature = x
-        x = self.fc_pi(feature)
+        x = self.fc_pi(x)
         action = F.softmax(x, dim=1)
-
-        amount = self.fc_pi_amount(feature)
-        amount = torch.sigmoid(amount)
-        return action, amount
+        return action
 
     def v(self, x):
         x = x.view(-1, FEATURE_SIZE)
@@ -74,120 +49,112 @@ class PPO(nn.Module):
 
     def make_batch(self):
         (s_lst, a_lst, r_lst,
-         s_prime_lst, prob_a_lst, amount_lst,
-         done_lst) = [], [], [], [], [], [], []
+         s_prime_lst, prob_a_lst,
+         done_lst) = [], [], [], [], [], []
         for transition in self.data:
-            s, a, r, s_prime, prob_a, amount, done = transition
+            s, a, r, s_prime, prob_a, done = transition
 
             s_lst.append(s)
             a_lst.append([a])
             r_lst.append([r])
             s_prime_lst.append(s_prime)
             prob_a_lst.append([prob_a])
-            amount_lst.append([amount])
             done_mask = 0 if done else 1
             done_lst.append([done_mask])
 
         (s, a, r,
-         s_prime, done_mask, prob_a,
-         amount) = (torch.tensor(s_lst, dtype=torch.float).cuda(),
+         s_prime, done_mask,
+         prob_a) = (torch.tensor(s_lst, dtype=torch.float).cuda(),
                     torch.tensor(a_lst).cuda(),
                     torch.tensor(r_lst).cuda(),
                     torch.tensor(s_prime_lst, dtype=torch.float).cuda(),
                     torch.tensor(done_lst, dtype=torch.float).cuda(),
-                    torch.tensor(prob_a_lst).cuda(),
-                    torch.tensor(amount_lst).cuda())
+                    torch.tensor(prob_a_lst).cuda())
         self.data = []
-        return s, a, r, s_prime, done_mask, prob_a, amount
+        return s, a, r, s_prime, done_mask, prob_a
 
     def train_net(self):
-        s, a, r, s_prime, done_mask, prob_a, amount = self.make_batch()
+        s, a, r, s_prime, done_mask, prob_a = self.make_batch()
+        td_target = r + GAMMA * self.v(s_prime) * done_mask
+        delta = td_target - self.v(s)
 
-        for i in range(K_EPOCH):
-            v_prime = self.v(s_prime).squeeze(1)
-            td_target = r + GAMMA * v_prime * done_mask
-            v_s = self.v(s).squeeze(1)
-            delta = td_target - v_s
-            delta = delta.detach().cpu().numpy()
+        pi = self.pi(s)
+        pi_a = pi.gather(1, a)
 
-            pi, amount_a = self.pi(s)
-            pi_a = pi.squeeze(1).gather(1, a)
-            amount_a = amount_a.squeeze(1).gather(1, a)
+        policy_loss = -torch.log(pi_a) * delta.detach()
+        td_error = F.smooth_l1_loss(self.v(s), td_target.detach())
 
-            loss = -torch.log(pi_a) * delta + F.smooth_l1_loss(self.v(s), td_target.detach())
+        loss = policy_loss + td_error
 
-            if self.writer:
-                writer.add_scalar('loss', loss.mean().item(), self.global_i)
-                writer.add_scalar('delta', delta.mean().item(), self.global_i)
-                writer.add_scalar('action_ratio', ratio1.mean().item(), self.global_i)
-                writer.add_scalar('amount_ratio', ratio2.mean().item(), self.global_i)
+        if self.writer:
+            writer.add_scalar('loss', loss.mean().item(), self.global_i)
+            writer.add_scalar('td_error', td_error.mean().item(), self.global_i)
+            writer.add_scalar('policy_loss', policy_loss.mean().item(), self.global_i)
 
-            self.optimizer.zero_grad()
-            loss.mean().backward(retain_graph=True)
-            self.optimizer.step()
-            self.global_i += 1
+        self.optimizer.zero_grad()
+        loss.mean().backward()
+        self.optimizer.step()
+        self.global_i += 1
 
 
 if __name__ == '__main__':
 
     from stable_baselines.common.vec_env import DummyVecEnv
-    from env.CryptoTradingEnv import CryptoTradingEnv
+    from env.CryptoTradingEnvAllIn2 import CryptoTradingEnvAllIn2
+    from preparer import TickerDataFramePreparer
     import pandas as pd
 
     # Load data
-    df = pd.read_csv('./data/upbit/upbit-btckrw-240m.csv', index_col=False)
+    df = pd.read_csv('./data/upbit-btckrw-1m.csv', index_col=['timestamp'], parse_dates=['timestamp'])
     df = df.sort_values('timestamp')
+
+    df = TickerDataFramePreparer(
+        window='15m',
+    ).prepare(df)
 
     total = len(df)
     train_ratio = 0.6
     n_train = int(total * train_ratio)
 
-    train_df = df[:n_train]
-    test_df = df[n_train:].reset_index()
+    train_df = df.iloc[:n_train].reset_index()
+    test_df = df.iloc[n_train:].reset_index()
 
     # Make Env
-    train_env = DummyVecEnv([lambda: CryptoTradingEnv(train_df)])
-    test_env = DummyVecEnv([lambda: CryptoTradingEnv(test_df)])
+    train_env = DummyVecEnv([lambda: CryptoTradingEnvAllIn2(train_df)])
+    test_env = DummyVecEnv([lambda: CryptoTradingEnvAllIn2(test_df)])
 
-    writer = SummaryWriter("./tensorboard/20190616_1/mlp_ppo")
+    # writer
+    writer = SummaryWriter("./tensorboard/20190617/actor_critic")
 
-    # for i, row in train_df.iterrows():
-    #     writer.add_scalars('train_price', {'open': row['open'],
-    #                                  'close': row['close'],
-    #                                  'low': row['low'],
-    #                                  'high': row['high']}, i)
-
-    # for i, row in test_df.iterrows():
-    #     writer.add_scalars('test_price', {'open': row['open'],
-    #                                  'close': row['close'],
-    #                                  'low': row['low'],
-    #                                  'high': row['high']}, i)
-
-    model = PPO(writer)
+    model = ActorCritic(writer)
     model = model.cuda()
     model.apply(weight_init)
-    score = 0.0
     print_interval = 1
 
-    for n_epi in range(N_EPI):
+    n_epi = 1000
+    n_batch = 30
+    n_rollout = 24
+
+    for n_epi in range(n_epi):
         s = train_env.reset()
         done = False
 
-        for i in range(N_BATCH):
-            for t in range(T_HORIZON):
+        score = 0.0
+
+        for i in range(n_batch):
+            for t in range(n_rollout):
                 s_tensor = torch.from_numpy(s).float().cuda()
-                prob, amount = model.pi(s_tensor)
+                prob = model.pi(s_tensor)
                 prob = prob.view(-1)
-                amount = amount.view(-1)
                 m = Categorical(prob)
                 action = m.sample().item()
-                amount = amount.detach().cpu().numpy()[action]
-                a = [(action, amount)]
+                a = [action]
                 s_prime, r, done, info = train_env.step(a)
+                s, s_prime, r, done = s[0], s_prime[0], r[0], done[0] 
 
                 model.put_data(
-                    (s, action, r, s_prime, prob[action].item(), amount, done))
-                s = s_prime
+                    (s, action, r, s_prime, prob[action].item(), done))
+                s = np.array([s_prime])
 
                 score += r
                 if done:
@@ -200,46 +167,47 @@ if __name__ == '__main__':
                 n_epi, (score/print_interval).item()))
             score = 0.0
 
-    # train_env.close()
-
     model.eval()
+
     # validation
-    obs = train_env.reset()
+    train_env.reset()
     train_env.current_step = 0
+    obs, _, _, _ = train_env.step([2])
+
+    prob_list = []
 
     while True:
         obs = torch.from_numpy(obs).cuda()
-        prob, amount = model.pi(s_tensor)
+        prob = model.pi(s_tensor)
         prob = prob.view(-1)
-        amount = amount.view(-1)
-        m = Categorical(prob)
-        action = m.sample().item()
-        amount = amount.detach().cpu().numpy()[action]
-        a = [(action, amount)]
+        # m = Categorical(prob)
+        # action = m.sample().item()
+        prob_list.append(prob.detach().cpu().tolist())
+        action = prob.argmax().item()
+
+        a = [action]
         obs, r, done, info = train_env.step(a)
+
         if done:
             break
 
         train_env.render()
 
-    obs = test_env.reset()
+    test_env.reset()
     test_env.current_step = 0
+    obs, _, _, _ = train_env.step([2])
+
     while True:
         obs = torch.from_numpy(obs).cuda()
-        prob, amount = model.pi(s_tensor)
+        prob = model.pi(s_tensor)
         prob = prob.view(-1)
-        amount = amount.view(-1)
         m = Categorical(prob)
         action = m.sample().item()
-        amount = amount.detach().cpu().numpy()[action]
-        a = [(action, amount)]
+        a = [action]
         obs, r, done, info = test_env.step(a)
         if done:
             break
 
         test_env.render()
 
-
-    torch.save(model, "./ckpts/mlp_lstm.torch")
-    
-    save_model("./ckpts/mlp_lstm.torch")
+    torch.save(model, "./ckpts/test.torch")

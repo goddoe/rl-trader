@@ -22,12 +22,12 @@ def naive_normalize(df):
     return (df-df.mean()) / (df.std() + 1e-6)
 
 
-class CryptoTradingEnv(gym.Env):
+class CryptoTradingEnvAllIn2(gym.Env):
     """A stock trading environment for OpenAI gym"""
     metadata = {'render.modes': ['human']}
 
     def __init__(self, df, win_size=30):
-        super(CryptoTradingEnv, self).__init__()
+        super(CryptoTradingEnvAllIn2, self).__init__()
 
         self.df = StockDataFrame.retype(df)
         self.reward_range = (0, MAX_ACCOUNT_BALANCE)
@@ -35,11 +35,11 @@ class CryptoTradingEnv(gym.Env):
 
         # Actions of the format Buy x%, Sell x%, Hold, etc.
         self.action_space = spaces.Box(
-            low=np.array([0, 0]), high=np.array([3, 3]), dtype=np.float16)
+            low=0, high=1, shape=(3,), dtype=np.float16)
 
         # Prices contains the OHCL values for the last five prices
         self.observation_space = spaces.Box(
-            low=-1, high=1, shape=(90, ), dtype=np.float16)
+            low=-1, high=1, shape=(96, ), dtype=np.float16)
 
         self.factory = mfsl.create_factory()
         self.df["lhc"] = self.df["close"]
@@ -58,31 +58,31 @@ class CryptoTradingEnv(gym.Env):
                                                  (frag[f] for f in self.feats_str))), axis=0)
         market_feature = np.nan_to_num(market_feature) + 1e-6
 
-        # state_feature = np.array([
-        #     self.balance / MAX_ACCOUNT_BALANCE,
-        #     # self.max_net_worth / MAX_ACCOUNT_BALANCE,
-        #     self.shares_held / MAX_NUM_SHARES,
-        #     # self.cost_basis / MAX_SHARE_PRICE,
-        #     # self.total_shares_sold / MAX_NUM_SHARES,
-        #     # self.total_sales_value / (MAX_NUM_SHARES * MAX_SHARE_PRICE),
-        # ])
+        
 
-        # feature = np.concatenate([market_feature, state_feature], axis=0)
+        state_feature = np.array([
+            self.balance / MAX_ACCOUNT_BALANCE,
+            self.max_net_worth / MAX_ACCOUNT_BALANCE,
+            self.shares_held / MAX_NUM_SHARES,
+            self.cost_basis / MAX_SHARE_PRICE,
+            self.total_shares_sold / MAX_NUM_SHARES,
+            self.total_sales_value / (MAX_NUM_SHARES * MAX_SHARE_PRICE),
+        ])
 
-        return market_feature.flatten()
+        feature = np.concatenate([market_feature, state_feature], axis=0)
+
+        return feature.flatten()
 
     def _take_action(self, action):
         # Set the current price to a random price within the time step
         current_price = random.uniform(
-            self.df.loc[self.current_step, "open"], self.df.loc[self.current_step, "close"])
+            self.df.loc[self.current_step, "open"],
+            self.df.loc[self.current_step, "close"])
 
-        action_type = action[0]
-        amount = action[1]
-
-        if action_type < 1:
+        if action < 1:
             # Buy amount % of balance in shares
             total_possible = self.balance / (current_price*(1. + COMMISSION))
-            shares_bought = total_possible * amount
+            shares_bought = total_possible
             prev_cost = self.cost_basis * self.shares_held
             additional_cost = shares_bought * (current_price*(1.+COMMISSION))
 
@@ -91,9 +91,9 @@ class CryptoTradingEnv(gym.Env):
                 prev_cost + additional_cost) / (self.shares_held + shares_bought)
             self.shares_held += shares_bought
 
-        elif action_type < 2:
+        elif action < 2:
             # Sell amount % of shares held
-            shares_sold = self.shares_held * amount
+            shares_sold = self.shares_held
             self.balance += shares_sold * (current_price*(1. - COMMISSION))
             self.shares_held -= shares_sold
             self.total_shares_sold += shares_sold
@@ -118,9 +118,14 @@ class CryptoTradingEnv(gym.Env):
             self.current_step = 0
             already_done = True
 
-        delay_modifier = (self.current_step / MAX_STEPS)
+        # diff = self.current_step - self.first_step
 
-        reward = self.balance * delay_modifier
+        # reward = 0
+        # if diff >= 22:  # similar to n_rollout
+        reward = (self.net_worth - INITIAL_ACCOUNT_BALANCE)
+
+        # self.first_step = self.current_step
+        # reward = reward * (self.current_step - self.first_step)
 
         done = self.net_worth <= 0
 
@@ -131,7 +136,7 @@ class CryptoTradingEnv(gym.Env):
 
         return obs, reward, done, {}
 
-    def reset(self, init_step=None):
+    def reset(self):
         # Reset the state of the environment to an initial state
         self.balance = INITIAL_ACCOUNT_BALANCE
         self.net_worth = INITIAL_ACCOUNT_BALANCE
@@ -145,12 +150,15 @@ class CryptoTradingEnv(gym.Env):
         self.current_step = random.randint(
             0, len(self.df.loc[:, 'open'].values) - self.win_size)
 
+        self.first_step = self.current_step
+
         return self._next_observation()
 
     def render(self, mode='human', close=False):
         # Render the environment to the screen
         profit = self.net_worth - INITIAL_ACCOUNT_BALANCE
 
+        print('-'*30)
         print(f'Step: {self.current_step}')
         print(f'Balance: {self.balance}')
         print(
